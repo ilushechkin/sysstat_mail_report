@@ -57,8 +57,8 @@ def get_max_network_speed():
     except OSError:
       logging.getLogger().warning("Unable to get speed of interface %s" % (interface))
       continue
-    logging.getLogger().debug("Speed of interface %s: %u Mb/s" % (interface, new_speed))
-    max_speed = max(max_speed, new_speed)
+    logging.getLogger().debug("Speed of interface %s: %u b/s" % (interface, new_speed))
+    max_speed = round(max(max_speed, new_speed)/1024/1024, -3)
   logging.getLogger().info("Maximum interface speed: %u Mb/s" % (max_speed))
   return max_speed
 
@@ -119,6 +119,9 @@ def format_email(exp, dest, subject, header_text, img_format, img_filepaths, alt
         html.append("<br>")
       data = minify_svg(img_filepath)
       html.append(data)
+  cmd = ("timedatectl | grep zone")
+  output = subprocess.check_output(cmd, shell=True, universal_newlines=True)
+  html.append("<br><br><sub>%s</sub><br>" % (output))
   html = "".join(html)
   html = email.mime.text.MIMEText(html, "html")
 
@@ -173,7 +176,7 @@ class SysstatData:
 
     if report_type is ReportType.DAILY:
       date = today - datetime.timedelta(days=1)
-      filepath = "/var/log/sysstat/sa%02u" % (date.day)
+      filepath = "/var/log/sa/sa%02u" % (date.day)
       if os.path.isfile(filepath):
         self.sa_filepaths.append(filepath)
       else:
@@ -184,9 +187,9 @@ class SysstatData:
         date = today - datetime.timedelta(days=i)
         for week_subdir in (True, False):
           if week_subdir:
-            filepath = date.strftime("/var/log/sysstat/%Y%m/sa%d")
+            filepath = date.strftime("/var/log/sa/%Y%m/sa%d")
           else:
-            filepath = date.strftime("/var/log/sysstat/sa%d")
+            filepath = date.strftime("/var/log/sa/sa%d")
           compressed_filepaths = ("%s.gz" % (filepath), "%s.bz2" % (filepath))
           if not os.path.isfile(filepath):
             for compressed_filepath in compressed_filepaths:
@@ -209,7 +212,7 @@ class SysstatData:
         year = today.year
         month = today.month - 1
       for day in range(1, calendar.monthrange(year, month)[1] + 1):
-        filepath = "/var/log/sysstat/%04u%02u/sa%02u" % (year, month, day)
+        filepath = "/var/log/sa/%04u%02u/sa%02u" % (year, month, day)
         compressed_filepaths = ("%s.gz" % (filepath), "%s.bz2" % (filepath))
         if not os.path.isfile(filepath):
           for compressed_filepath in compressed_filepaths:
@@ -597,6 +600,6 @@ if __name__ == "__main__":
     real_mail_from = email.utils.parseaddr(args.mail_from)[1]
     real_mail_to = email.utils.parseaddr(args.mail_to)[1]
     logging.getLogger().info("Sending email from %s to %s..." % (real_mail_from, real_mail_to))
-    subprocess.check_output(("sendmail", "-f", real_mail_from, real_mail_to),
+    subprocess.check_output(("/usr/sbin/sendmail", "-f", real_mail_from, real_mail_to),
                             input=email_data,
                             universal_newlines=True)
