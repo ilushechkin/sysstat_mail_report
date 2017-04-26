@@ -27,7 +27,7 @@ import xml.etree.ElementTree
 
 
 ReportType = enum.Enum("ReportType", ("DAILY", "WEEKLY", "MONTHLY"))
-SysstatDataType = enum.Enum("SysstatDataType", ("LOAD", "CPU", "MEM", "SWAP", "NET", "IO"))
+SysstatDataType = enum.Enum("SysstatDataType", ("LOAD", "CPU", "MEM", "SWAP", "NET", "IO", "IOPS", "VOLS", "VOWT", "VOPS"))
 GraphFormat = enum.Enum("GraphFormat", ("TXT", "PNG", "SVG"))
 
 HAS_OPTIPNG = shutil.which("optipng") is not None
@@ -240,7 +240,11 @@ class SysstatData:
                  SysstatDataType.MEM: ("-r",),
                  SysstatDataType.SWAP: ("-S",),
                  SysstatDataType.NET: ("-n", "DEV"),
-                 SysstatDataType.IO: ("-b",)}
+                 SysstatDataType.IO: ("-b",),
+                 SysstatDataType.IOPS: ("-b",),
+                 SysstatDataType.VOLS: ("-pd",),
+                 SysstatDataType.VOWT: ("-pd",),
+                 SysstatDataType.VOPS: ("-pd",)}
     cmd.extend(dtype_cmd[dtype])
     cmd.append(sa_filepath)
     subprocess.check_call(cmd, stdout=output_file, universal_newlines=True)
@@ -315,12 +319,46 @@ class SysstatData:
             if itf in itf_files:
               itf_files[itf].write(line)
 
+    if (dtype is SysstatDataType.VOLS) or (dtype is SysstatDataType.VOWT) or (dtype is SysstatDataType.VOPS):
+      # split file by volume
+      with open(output_filepath, "rt") as output_file:
+        for line in output_file:
+          fields = line.split(";", 5)
+          if int(fields[1]) == -1:  # fields[3] == "LINUX-RESTART"
+            continue
+          itf = fields[3]
+          if itf in net_output_filepaths:
+            # not a new volume
+            break
+          if (itf.startswith("sd")) or (itf.startswith("fd")):
+            # block device
+            continue          
+          base_filename, ext = os.path.splitext(output_filepath)
+          net_output_filepaths[itf] = "%s_%s%s" % (base_filename, itf, ext)
+      logging.getLogger().debug("Found %u volumes: %s" % (len(net_output_filepaths), ", ".join(net_output_filepaths)))
+      with contextlib.ExitStack() as ctx:
+        itf_files = {}
+        for itf, itf_filepath in net_output_filepaths.items():
+          itf_files[itf] = ctx.enter_context(open(itf_filepath, "wt"))
+        with open(output_filepath, "rt") as output_file:
+          for line in output_file:
+            fields = line.split(";", 5)
+            if int(fields[1]) == -1:  # fields[3] == "LINUX-RESTART"
+              continue
+            itf = fields[3]
+            if itf in itf_files:
+              itf_files[itf].write(line)
+
     dtype_columns = {SysstatDataType.LOAD: ("timestamp", "ldavg-5"),
                      SysstatDataType.CPU: ("timestamp", "%user", "%nice", "%system", "%iowait", "%steal", "%idle"),
                      SysstatDataType.MEM: ("timestamp", "kbmemused", "kbbuffers", "kbcached", "kbcommit", "kbactive", "kbdirty"),
                      SysstatDataType.SWAP: ("timestamp", "%swpused"),
                      SysstatDataType.NET: ("timestamp", "rxkB/s", "txkB/s"),
-                     SysstatDataType.IO: ("timestamp", "bread/s", "bwrtn/s")}
+                     SysstatDataType.IO: ("timestamp", "bread/s", "bwrtn/s"),
+                     SysstatDataType.IOPS: ("timestamp", "tps"),
+                     SysstatDataType.VOLS: ("timestamp", "rd_sec/s", "wr_sec/s"),
+                     SysstatDataType.VOWT: ("timestamp", "await"),
+                     SysstatDataType.VOPS: ("timestamp", "tps")}
     indexes = __class__.getColumnIndexes(dtype_columns[dtype], columns)
 
     return indexes, net_output_filepaths
@@ -372,7 +410,7 @@ class Plotter:
 
     # x axis setup
     gnuplot_code.extend(("set xdata time",
-                         "set xlabel 'Time'"))
+                         "set xlabel ''"))
     if self.report_type is ReportType.MONTHLY:
       gnuplot_code.append("set xtics %u" % (60 * 60 * 24 * 2))  # 2 days
     now = datetime.datetime.now()
@@ -424,7 +462,7 @@ class Plotter:
         elif data_type is SysstatDataType.NET:
           # convert from KB/s to Mb/s
           ydata = "($%u/125)" % (data_index)
-        elif data_type is SysstatDataType.IO:
+        elif (data_type is SysstatDataType.IO) or (data_type is SysstatDataType.VOLS):
           # convert from block/s to MB/s
           ydata = "($%u*512/1000000)" % (data_index)
         else:
@@ -552,10 +590,27 @@ if __name__ == "__main__":
                                                        "tx"),
                                        "ylabel": "Bandwith (Mb/s)",
                                        "yrange": (0, "%u<*" % (get_max_network_speed()))},
-                 SysstatDataType.IO: {"title": "IO",
+                 SysstatDataType.IO: {"title": "Total IO",
                                       "data_titles": ("read",
                                                       "wrtn"),
                                       "ylabel": "Activity (MB/s)",
+                                      "yrange": (0, None)},
+                 SysstatDataType.IOPS: {"title": "Total IOPS",
+                                      "data_titles": ("tps",),
+                                      "ylabel": "Transfers per second",
+                                      "yrange": (0, None)},
+                 SysstatDataType.VOLS: {"title": "IO per volume",
+                                      "data_titles": ("read",
+                                                      "wrtn"),
+                                      "ylabel": "Activity (MB/s)",
+                                      "yrange": (0, None)},
+                 SysstatDataType.VOWT: {"title": "Average time to be served",
+                                      "data_titles": ("await",),
+                                      "ylabel": "Time to be served (milliseconds)",
+                                      "yrange": (0, None)},
+                 SysstatDataType.VOPS: {"title": "IOPS per volume",
+                                      "data_titles": ("tps",),
+                                      "ylabel": "Transfers per second",
                                       "yrange": (0, None)}}
 
     graph_filepaths = {GraphFormat.TXT: [],
