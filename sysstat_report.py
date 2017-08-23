@@ -132,6 +132,7 @@ def format_email(exp, dest, subject, header_text, img_format, img_filepaths, alt
   cmd = ("timedatectl | grep zone")
   output = subprocess.check_output(cmd, shell=True, universal_newlines=True)
   html.append("<br><br><sub>%s</sub><br>" % (output))
+  html.append("</body></html>")
   html = "".join(html)
   html = email.mime.text.MIMEText(html, "html")
 
