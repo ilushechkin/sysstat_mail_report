@@ -53,13 +53,14 @@ def get_max_network_speed():
     filepath = "/sys/class/net/%s/speed" % (interface)
     try:
       with open(filepath, "rt") as f:
-        new_speed = int(f.read())
+        max_speed = int(f.read())
     except OSError:
       logging.getLogger().warning("Unable to get speed of interface %s" % (interface))
       continue
-    logging.getLogger().debug("Speed of interface %s: %u b/s" % (interface, new_speed))
-    max_speed = round(max(max_speed, new_speed)/1024/1024, -3)
+    logging.getLogger().debug("Speed of interface %s: %u b/s" % (interface, max_speed))
   logging.getLogger().info("Maximum interface speed: %u Mb/s" % (max_speed))
+  # set 0 for auto scale
+  max_speed = 0
   return max_speed
 
 
@@ -111,6 +112,15 @@ def format_email(exp, dest, subject, header_text, img_format, img_filepaths, alt
   html = ["<html><head></head><body>"]
   if header_text is not None:
     html.append("<pre>%s</pre><br>" % (header_text))
+  cmd = ("hostname")
+  output = subprocess.check_output(cmd, shell=True, universal_newlines=True)
+  html.append("<pre>%s</pre>" % (output))
+  cmd = ("nproc")
+  output = subprocess.check_output(cmd, shell=True, universal_newlines=True)
+  html.append("<pre>CPU %s</pre>" % (output))
+  cmd = ("awk '( $1 == \"MemTotal:\" ) { print $2/1048576 }' /proc/meminfo")
+  output = subprocess.check_output(cmd, shell=True, universal_newlines=True)
+  html.append("<pre>RAM %s</pre><br>" % (output))
   if img_format is GraphFormat.PNG:
     html.append("<br>".join("<img src=\"cid:img%u\">" % (i) for i in range(len(img_filepaths))))
   elif img_format is GraphFormat.SVG:
@@ -350,14 +360,14 @@ class SysstatData:
               itf_files[itf].write(line)
 
     dtype_columns = {SysstatDataType.LOAD: ("timestamp", "ldavg-5"),
-                     SysstatDataType.CPU: ("timestamp", "%user", "%nice", "%system", "%iowait", "%steal", "%idle"),
+                     SysstatDataType.CPU: ("timestamp", "%user", "%system", "%nice", "%iowait", "%idle"),
                      SysstatDataType.MEM: ("timestamp", "kbmemused", "kbbuffers", "kbcached", "kbcommit", "kbactive", "kbdirty"),
                      SysstatDataType.SWAP: ("timestamp", "%swpused"),
                      SysstatDataType.NET: ("timestamp", "rxkB/s", "txkB/s"),
                      SysstatDataType.IO: ("timestamp", "bread/s", "bwrtn/s"),
                      SysstatDataType.IOPS: ("timestamp", "tps"),
                      SysstatDataType.VOLS: ("timestamp", "rd_sec/s", "wr_sec/s"),
-                     SysstatDataType.VOWT: ("timestamp", "await"),
+                     SysstatDataType.VOWT: ("timestamp", "await", "svctm"),
                      SysstatDataType.VOPS: ("timestamp", "tps")}
     indexes = __class__.getColumnIndexes(dtype_columns[dtype], columns)
 
@@ -458,13 +468,13 @@ class Plotter:
       for data_index, data_title in zip(data_indexes[1:], data_titles):
         if data_type is SysstatDataType.MEM:
           # convert from KB to MB
-          ydata = "($%u/1000)" % (data_index)
+          ydata = "($%u/1024)" % (data_index)
         elif data_type is SysstatDataType.NET:
-          # convert from KB/s to Mb/s
-          ydata = "($%u/125)" % (data_index)
+          # convert from KB/s to MB/s
+          ydata = "($%u/1024)" % (data_index)
         elif (data_type is SysstatDataType.IO) or (data_type is SysstatDataType.VOLS):
           # convert from block/s to MB/s
-          ydata = "($%u*512/1000000)" % (data_index)
+          ydata = "($%u/2/1024)" % (data_index)
         else:
           ydata = str(data_index)
         if data_file_nickname:
@@ -520,7 +530,7 @@ if __name__ == "__main__":
                           "--img-size",
                           type=int,
                           nargs=2,
-                          default=(780, 400),
+                          default=(720, 360),
                           dest="img_size",
                           help="Graph image size")
   arg_parser.add_argument("-f",
@@ -565,10 +575,9 @@ if __name__ == "__main__":
                                         "yrange": (0, "%u<*" % (os.cpu_count()))},
                  SysstatDataType.CPU: {"title": "CPU",
                                        "data_titles": ("user",
-                                                       "nice",
                                                        "system",
+                                                       "nice",
                                                        "iowait",
-                                                       "steal",
                                                        "idle"),
                                        "ylabel": "CPU usage (%)",
                                        "yrange": (0, 100)},
@@ -588,7 +597,7 @@ if __name__ == "__main__":
                  SysstatDataType.NET: {"title": "Network",
                                        "data_titles": ("rx",
                                                        "tx"),
-                                       "ylabel": "Bandwith (Mb/s)",
+                                       "ylabel": "Activity (MB/s)",
                                        "yrange": (0, "%u<*" % (get_max_network_speed()))},
                  SysstatDataType.IO: {"title": "Total IO",
                                       "data_titles": ("read",
@@ -605,7 +614,8 @@ if __name__ == "__main__":
                                       "ylabel": "Activity (MB/s)",
                                       "yrange": (0, None)},
                  SysstatDataType.VOWT: {"title": "Average time to be served",
-                                      "data_titles": ("await",),
+                                      "data_titles": ("await",
+                                                      "svctm"),
                                       "ylabel": "Time to be served (milliseconds)",
                                       "yrange": (0, None)},
                  SysstatDataType.VOPS: {"title": "IOPS per volume",
